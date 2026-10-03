@@ -7,10 +7,14 @@ from decimal import Decimal
 import streamlit as st
 
 import agent
+import backend
 import config
 import db
 
 db.init()
+backend.setup()
+
+
 
 st.set_page_config(page_title='Accounting Assistant', layout='centered')
 st.title('Accounting Assistant')

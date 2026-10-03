@@ -4,6 +4,13 @@ from contextvars import ContextVar
 
 from langchain_core.tools import tool
 
+from contextvars import ContextVar
+
+from langchain_core.tools import tool
+
+import backend
+import db
+
 import db
 
 # Who is asking. agent.py sets this before every run and the tools read it.
@@ -39,34 +46,34 @@ def list_my_clients():
 @tool
 def list_accounts(client_id: str):
     '''Chart of accounts for a client: code, name and type.'''
-    return run('list_accounts', client_id, {}, lambda: db.accounts(client_id))
+    return run('list_accounts', client_id, {}, lambda: backend.accounts(client_id))
 
 
 @tool
 def get_trial_balance(client_id: str, as_of: str):
     '''Trial balance for a client as of a date (YYYY-MM-DD).'''
     return run('get_trial_balance', client_id, {'as_of': as_of},
-               lambda: db.trial_balance(client_id, as_of))
+               lambda: backend.trial_balance(client_id, as_of))
 
 
 @tool
 def get_profit_and_loss(client_id: str, start: str, end: str):
     '''Profit and loss for a client between two dates (YYYY-MM-DD, inclusive).'''
     return run('get_profit_and_loss', client_id, {'start': start, 'end': end},
-               lambda: db.profit_and_loss(client_id, start, end))
+               lambda: backend.profit_and_loss(client_id, start, end))
 
 
 @tool
 def list_journal_entries(client_id: str, start: str, end: str):
     '''Journal entries, with their lines, for a client between two dates (YYYY-MM-DD).'''
     return run('list_journal_entries', client_id, {'start': start, 'end': end},
-               lambda: db.list_entries(client_id, start, end))
+               lambda: backend.list_entries(client_id, start, end))
 
 
 @tool
 def get_advisory_notes(client_id: str):
     '''Saved adviser notes and recommendations for a client.'''
-    return run('get_advisory_notes', client_id, {}, lambda: db.get_notes(client_id))
+    return run('get_advisory_notes', client_id, {}, lambda: backend.get_notes(client_id))
 
 
 # ---------- write tools: agent.py pauses before each one for approval ----------
@@ -77,7 +84,7 @@ def post_journal_entry(client_id: str, date: str, memo: str, lines: list[dict]):
     {account_code, debit, credit}. Amounts are strings like 120.00 and the unused
     side is an empty string. Call list_accounts first. Needs the adviser to approve.'''
     return run('post_journal_entry', client_id, {'date': date, 'memo': memo, 'lines': lines},
-               lambda: db.insert_entry(client_id, date, memo, lines, current_adviser.get()))
+               lambda: backend.insert_entry(client_id, date, memo, lines, current_adviser.get()))
 
 
 @tool
@@ -85,14 +92,14 @@ def reverse_journal_entry(client_id: str, entry_id: int, reason: str):
     '''Reverse a posted entry by posting an offsetting entry dated today.
     Never deletes anything. Needs the adviser to approve.'''
     return run('reverse_journal_entry', client_id, {'entry_id': entry_id, 'reason': reason},
-               lambda: db.reverse_entry(client_id, entry_id, reason, current_adviser.get()))
+               lambda: backend.reverse_entry(client_id, entry_id, reason, current_adviser.get()))
 
 
 @tool
 def add_advisory_note(client_id: str, note: str):
     '''Save an adviser note or recommendation for a client. Needs the adviser to approve.'''
     return run('add_advisory_note', client_id, {'note': note},
-               lambda: db.add_note(client_id, current_adviser.get(), note))
+               lambda: backend.add_note(client_id, current_adviser.get(), note))
 
 
 READ_TOOLS = [list_my_clients, list_accounts, get_trial_balance,

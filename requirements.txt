@@ -1,0 +1,5 @@
+streamlit>=1.40,<2
+python-dotenv>=1,<2
+langchain>=1,<2
+langchain-anthropic>=1,<2
+requests>=2.31,<3

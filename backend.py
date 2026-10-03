@@ -37,7 +37,9 @@ def trial_balance(client_id, as_of):
 
 
 def profit_and_loss(client_id, start, end):
-    _sandbox_only(client_id, 'Profit and loss')
+    start, end = date.fromisoformat(start).isoformat(), date.fromisoformat(end).isoformat()
+    if _is_qbo(client_id):
+        return qbo.profit_and_loss(start, end)
     return db.profit_and_loss(client_id, start, end)
 
 

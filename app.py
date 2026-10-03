@@ -84,7 +84,7 @@ if pending:
         reject = right.button('Reject')
     if approve or reject:
         with st.spinner('Working...'):
-            result = asyncio.run(agent.decide(adviser_id, approve, len(pending), st.session_state.chat_id))
+           result = asyncio.run(agent.decide(adviser_id, approve, pending, st.session_state.chat_id))
         record(result)
         st.rerun()
 

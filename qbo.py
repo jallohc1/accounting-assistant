@@ -108,3 +108,43 @@ def trial_balance(as_of):
     out = {'as_of': as_of, 'period_start': start, 'rows': [], 'total_debit': '0', 'total_credit': '0'}
     _walk(data.get('Rows', {}).get('Row', []), out)
     return out
+
+def _leaves(rows, parent=''):
+    '''Flatten a section into account rows with full names such as Automobile:Fuel.'''
+    out = []
+    for row in rows:
+        if 'ColData' in row:
+            cols = row['ColData']
+            out.append({'account': parent + cols[0]['value'], 'amount': _money(cols[1]['value'])})
+        child_parent = parent
+        header = row.get('Header')
+        if header and 'ColData' in header:
+            cols = header['ColData']
+            name = parent + cols[0]['value']
+            if cols[1]['value'] not in ('', None):
+                out.append({'account': name, 'amount': cols[1]['value']})
+            child_parent = name + ':'
+        if 'Rows' in row:
+            out.extend(_leaves(row['Rows'].get('Row', []), child_parent))
+    return out
+
+def profit_and_loss(start, end):
+    from decimal import Decimal
+
+    data = report(os.environ['QBO_REALM_ID'], access_token(), 'ProfitAndLoss',
+                  start_date=start, end_date=end)
+    revenue, expenses, qbo_net = [], [], '0'
+    for row in data.get('Rows', {}).get('Row', []):
+        group = row.get('group')
+        rows = row.get('Rows', {}).get('Row', [])
+        if group in ('Income', 'OtherIncome'):
+            revenue += _leaves(rows)
+        elif group in ('COGS', 'Expenses', 'OtherExpenses'):
+            expenses += _leaves(rows)
+        elif group == 'NetIncome':
+            qbo_net = _money(row['Summary']['ColData'][1]['value'])
+    total_revenue = sum(Decimal(r['amount']) for r in revenue)
+    total_expenses = sum(Decimal(r['amount']) for r in expenses)
+    return {'start': start, 'end': end, 'revenue': revenue, 'expenses': expenses,
+            'total_revenue': str(total_revenue), 'total_expenses': str(total_expenses),
+            'net_income': str(total_revenue - total_expenses), 'quickbooks_net_income': qbo_net}

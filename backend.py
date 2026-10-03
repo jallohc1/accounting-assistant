@@ -50,14 +50,26 @@ def list_entries(client_id, start, end):
     return db.list_entries(client_id, start, end)
 
 
+def _check_open(client_id, day):
+    '''Refuse a date in a closed period: the firm's date first, then QuickBooks' own.'''
+    if db.period_is_closed(client_id, day):
+        raise ValueError(f'The period containing {day} is closed')
+    close = qbo.book_close_date()
+    if close and day <= close:
+        raise ValueError(f'The period containing {day} is closed in QuickBooks (closing date {close})')
+
+
 def insert_entry(client_id, day, memo, lines, adviser_id):
     if _is_qbo(client_id):
+        day = date.fromisoformat(day).isoformat()
+        _check_open(client_id, day)
         return qbo.create_journal_entry(day, memo, lines)
     return db.insert_entry(client_id, day, memo, lines, adviser_id)
 
 
 def reverse_entry(client_id, entry_id, reason, adviser_id):
     if _is_qbo(client_id):
+        _check_open(client_id, date.today().isoformat())
         return qbo.reverse_journal_entry(entry_id, reason)
     return db.reverse_entry(client_id, entry_id, reason, adviser_id)
 

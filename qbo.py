@@ -301,3 +301,9 @@ def reverse_journal_entry(entry_id, reason):
                       'credit': amount if side == 'Debit' else ''})
     return create_journal_entry(date.today().isoformat(), f'Reversal of #{entry_id}: {reason}', lines,
                                 doc_number=f'REV-{entry_id}')
+
+def book_close_date():
+    '''QuickBooks' own closing date, or None if the company has not set one.'''
+    prefs = query('select * from Preferences').get('QueryResponse', {}).get('Preferences', [{}])[0]
+    close = prefs.get('AccountingInfoPrefs', {}).get('BookCloseDate')
+    return close[:10] if close else None

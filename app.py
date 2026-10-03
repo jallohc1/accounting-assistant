@@ -17,11 +17,30 @@ backend.setup()
 st.set_page_config(page_title='Accounting Assistant', layout='centered')
 st.title('Accounting Assistant')
 
-# Demo login. In production the adviser comes from your sign-in (SSO), never from a dropdown.
-advisers = {a['name']: a['id'] for a in db.advisers()}
+# Sign-in through OpenID Connect (st.login). The adviser comes from a verified email, never from a dropdown.
+if not st.user.is_logged_in:
+    st.write('Sign in with your firm account to continue.')
+    st.button('Sign in with Google', type='primary', on_click=st.login)
+    st.stop()
+
+user = st.user.to_dict()
+email = str(user.get('email') or '').strip().lower()
+if user.get('email_verified') is not True:
+    st.error('Your email address is not verified by the sign-in provider.')
+    st.button('Sign out', on_click=st.logout)
+    st.stop()
+
+adviser_id = db.adviser_for_email(email)
+if not adviser_id:
+    st.error('This account is not set up as an adviser. Ask your firm administrator.')
+    st.button('Sign out', on_click=st.logout)
+    st.stop()
+
+adviser_name = {a['id']: a['name'] for a in db.advisers()}.get(adviser_id, adviser_id)
 with st.sidebar:
-    adviser_name = st.selectbox('Logged in as (demo)', list(advisers))
-    adviser_id = advisers[adviser_name]
+    st.write('Signed in as **' + adviser_name + '**')
+    st.caption(email)
+    st.button('Sign out', on_click=st.logout)
     clients = db.clients_for(adviser_id)
     client = st.selectbox('Active client', clients, format_func=lambda c: c['name'])
     if config.READ_ONLY:

@@ -256,3 +256,29 @@ def add_note(client_id, adviser_id, note):
         cur = c.execute('INSERT INTO notes (client_id, adviser_id, note, created_at) VALUES (?, ?, ?, ?)',
                         (client_id, adviser_id, note, now))
     return {'note_id': cur.lastrowid}
+
+
+def _ensure_logins(c):
+    c.execute('CREATE TABLE IF NOT EXISTS adviser_logins ('
+              'email TEXT PRIMARY KEY, adviser_id TEXT NOT NULL REFERENCES advisers(id))')
+
+
+def link_login(email, adviser_id):
+    '''Link a verified sign-in email to an adviser. In production this comes from the firm's directory.'''
+    email = email.strip().lower()
+    with conn() as c:
+        _ensure_logins(c)
+        if not c.execute('SELECT 1 FROM advisers WHERE id = ?', (adviser_id,)).fetchone():
+            raise ValueError(f'No adviser {adviser_id}')
+        c.execute('INSERT OR REPLACE INTO adviser_logins (email, adviser_id) VALUES (?, ?)', (email, adviser_id))
+
+
+def adviser_for_email(email):
+    '''The adviser id for a verified sign-in email, or None if the email is not linked.'''
+    if not email:
+        return None
+    with conn() as c:
+        _ensure_logins(c)
+        row = c.execute('SELECT adviser_id FROM adviser_logins WHERE email = ?',
+                        (email.strip().lower(),)).fetchone()
+    return row['adviser_id'] if row else None

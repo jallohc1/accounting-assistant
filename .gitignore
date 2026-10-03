@@ -3,3 +3,4 @@
 __pycache__/
 *.db
 .qbo_refresh_token
+.streamlit/secrets.toml

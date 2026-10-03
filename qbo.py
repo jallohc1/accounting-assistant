@@ -205,3 +205,99 @@ def journal_entries(start, end):
     return {'start': start, 'end': end, 'count': len(entries), 'entries': entries,
             'total_debit': str(total_debit), 'total_credit': str(total_credit),
             'unbalanced': unbalanced, 'anomalies': anomalies}
+
+def _amount(value):
+    from decimal import Decimal, InvalidOperation
+    if value in (None, ''):
+        return Decimal('0')
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f'Not a valid amount: {value!r}')
+    if amount < 0:
+        raise ValueError('Amounts must not be negative')
+    return amount.quantize(Decimal('0.01'))
+
+
+def _validated_lines(lines):
+    '''Same rules as the sandbox ledger: real account ids, one side per line, balanced.'''
+    from decimal import Decimal
+    known = {a['code']: a['name'] for a in accounts()}
+    if len(lines) < 2:
+        raise ValueError('An entry needs at least two lines')
+    clean, debits, credits = [], Decimal('0'), Decimal('0')
+    for line in lines:
+        code = str(line.get('account_code'))
+        if code not in known:
+            raise ValueError(f'Unknown QuickBooks account id {code}. Call list_accounts and use an id')
+        debit, credit = _amount(line.get('debit')), _amount(line.get('credit'))
+        if (debit > 0) == (credit > 0):
+            raise ValueError('Each line needs a debit or a credit, not both and not neither')
+        clean.append({'account_code': code, 'account': known[code], 'debit': debit, 'credit': credit})
+        debits += debit
+        credits += credit
+    if debits != credits:
+        raise ValueError(f'Unbalanced: debits {debits} do not equal credits {credits}')
+    return clean, debits
+
+
+def _post(entity, body):
+    '''POST to QuickBooks. Refuses anything but the sandbox.'''
+    import uuid
+    if not BASE.startswith('https://sandbox-quickbooks.api.intuit.com'):
+        raise ValueError('QuickBooks writes are allowed on the sandbox only')
+    resp = requests.post(
+        f'{BASE}/v3/company/{os.environ["QBO_REALM_ID"]}/{entity}',
+        params={'requestid': str(uuid.uuid4())},
+        json=body,
+        headers={'Authorization': 'Bearer ' + access_token(), 'Accept': 'application/json'},
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise ValueError(f'QuickBooks rejected the request ({resp.status_code}): {resp.text[:500]}')
+    return resp.json()
+
+def create_journal_entry(day, memo, lines, doc_number=None):
+    from datetime import date
+    day = date.fromisoformat(day).isoformat()
+    clean, total = _validated_lines(lines)
+    body = {'TxnDate': day, 'PrivateNote': memo, 'Line': [
+        {'DetailType': 'JournalEntryLineDetail',
+         'Amount': float(l['debit'] or l['credit']),
+         'Description': memo,
+         'JournalEntryLineDetail': {'PostingType': 'Debit' if l['debit'] > 0 else 'Credit',
+                                    'AccountRef': {'value': l['account_code']}}}
+        for l in clean]}
+    if doc_number:
+        body['DocNumber'] = doc_number
+    je = _post('journalentry', body)['JournalEntry']
+    return {'entry_id': je['Id'], 'date': je.get('TxnDate', day), 'memo': memo, 'total': str(total)}
+
+
+def reverse_journal_entry(entry_id, reason):
+    '''Post an offsetting Journal Entry dated today. Only Journal Entry transactions qualify.'''
+    from datetime import date
+    entry_id = str(entry_id)
+    if not entry_id.isdigit():
+        raise ValueError('Entry ids are numbers')
+    found = query(f"select * from JournalEntry where Id = '{entry_id}'").get('QueryResponse', {}).get('JournalEntry', [])
+    if not found:
+        raise ValueError(f'No Journal Entry {entry_id}. Only transactions of type Journal Entry can be reversed')
+    je = found[0]
+    if str(je.get('DocNumber', '')).startswith('REV-'):
+        raise ValueError('That entry is itself a reversal. Post a new entry instead')
+    done = query(f"select * from JournalEntry where DocNumber = 'REV-{entry_id}'").get('QueryResponse', {}).get('JournalEntry', [])
+    if done:
+        raise ValueError(f'Entry {entry_id} is already reversed')
+    lines = []
+    for line in je.get('Line', []):
+        detail = line.get('JournalEntryLineDetail')
+        if not detail:
+            continue
+        amount = str(line['Amount'])
+        side = detail['PostingType']
+        lines.append({'account_code': detail['AccountRef']['value'],
+                      'debit': amount if side == 'Credit' else '',
+                      'credit': amount if side == 'Debit' else ''})
+    return create_journal_entry(date.today().isoformat(), f'Reversal of #{entry_id}: {reason}', lines,
+                                doc_number=f'REV-{entry_id}')

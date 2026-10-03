@@ -14,8 +14,6 @@ import db
 db.init()
 backend.setup()
 
-
-
 st.set_page_config(page_title='Accounting Assistant', layout='centered')
 st.title('Accounting Assistant')
 
@@ -60,6 +58,20 @@ def total(rows, key):
         return 'not a number'
 
 
+def with_names(args):
+    '''Lines for the approval panel with account names, only for clients this adviser may see.'''
+    cid = args.get('client_id')
+    names = {}
+    if cid and db.adviser_has_client(adviser_id, cid):
+        try:
+            names = {a['code']: a['name'] for a in backend.accounts(cid)}
+        except Exception:
+            names = {}
+    return [{'account_code': l.get('account_code'),
+             'account': names.get(str(l.get('account_code')), 'unknown'),
+             'debit': l.get('debit'), 'credit': l.get('credit')} for l in args['lines']]
+
+
 for m in st.session_state.messages:
     with st.chat_message(m['role']):
         if m.get('called'):
@@ -75,7 +87,7 @@ if pending:
             args = request['args']
             if 'lines' in args:
                 st.write('Date: ' + str(args.get('date')) + '   Memo: ' + str(args.get('memo')))
-                st.dataframe(args['lines'], hide_index=True)
+                st.dataframe(with_names(args), hide_index=True)
                 st.caption(f'Total debits {total(args["lines"], "debit")}  |  total credits {total(args["lines"], "credit")}')
             else:
                 st.json(args)
@@ -84,7 +96,7 @@ if pending:
         reject = right.button('Reject')
     if approve or reject:
         with st.spinner('Working...'):
-           result = asyncio.run(agent.decide(adviser_id, approve, pending, st.session_state.chat_id))
+            result = asyncio.run(agent.decide(adviser_id, approve, pending, st.session_state.chat_id))
         record(result)
         st.rerun()
 

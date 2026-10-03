@@ -51,12 +51,14 @@ def list_entries(client_id, start, end):
 
 
 def insert_entry(client_id, day, memo, lines, adviser_id):
-    _sandbox_only(client_id, 'Posting entries')
+    if _is_qbo(client_id):
+        return qbo.create_journal_entry(day, memo, lines)
     return db.insert_entry(client_id, day, memo, lines, adviser_id)
 
 
 def reverse_entry(client_id, entry_id, reason, adviser_id):
-    _sandbox_only(client_id, 'Reversing entries')
+    if _is_qbo(client_id):
+        return qbo.reverse_journal_entry(entry_id, reason)
     return db.reverse_entry(client_id, entry_id, reason, adviser_id)
 
 

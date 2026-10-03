@@ -148,3 +148,60 @@ def profit_and_loss(start, end):
     return {'start': start, 'end': end, 'revenue': revenue, 'expenses': expenses,
             'total_revenue': str(total_revenue), 'total_expenses': str(total_expenses),
             'net_income': str(total_revenue - total_expenses), 'quickbooks_net_income': qbo_net}
+
+
+def _sums(lines):
+    from decimal import Decimal
+    return (sum(Decimal(l['debit']) for l in lines), sum(Decimal(l['credit']) for l in lines))
+
+
+def journal_entries(start, end):
+    '''Every transaction's journal lines from the JournalReport, grouped per transaction.
+    Cross-checked against QuickBooks' own per-transaction subtotals and grand total.'''
+    from decimal import Decimal
+
+    data = report(os.environ['QBO_REALM_ID'], access_token(), 'JournalReport',
+                  start_date=start, end_date=end)
+    entries, current, anomalies, qbo_total = [], None, [], None
+    for row in data.get('Rows', {}).get('Row', []):
+        if row.get('type') == 'Section' and 'Summary' in row:
+            s = row['Summary']['ColData']
+            subtotal = (Decimal(_money(s[6]['value'])), Decimal(_money(s[7]['value'])))
+            if s[0]['value'] == 'TOTAL':
+                qbo_total = subtotal
+            elif current is None:
+                anomalies.append('subtotal with no transaction')
+            elif _sums(current['lines']) != subtotal:
+                anomalies.append('subtotal mismatch: ' + current['type'] + ' ' + current['entry_id'])
+            continue
+        if 'ColData' not in row:
+            anomalies.append('unknown row type: ' + str(row.get('type')))
+            continue
+        c = row['ColData']
+        if not any(col.get('value') for col in c):
+            continue
+        if c[1]['value']:
+            current = {'entry_id': c[1].get('id', ''), 'type': c[1]['value'], 'date': c[0]['value'],
+                       'num': c[2]['value'], 'name': c[3]['value'], 'lines': []}
+            entries.append(current)
+        elif current is None or c[1].get('id', '') != current['entry_id']:
+            anomalies.append('orphan line, transaction id ' + str(c[1].get('id', '')))
+            continue
+        current['lines'].append({'account_code': c[5].get('id', ''), 'account': c[5]['value'],
+                                 'debit': _money(c[6]['value']), 'credit': _money(c[7]['value']),
+                                 'memo': c[4]['value']})
+    total_debit, total_credit = Decimal('0'), Decimal('0')
+    unbalanced = []
+    for e in entries:
+        d, k = _sums(e['lines'])
+        total_debit += d
+        total_credit += k
+        if d != k:
+            unbalanced.append(e['type'] + ' ' + e['entry_id'])
+    if qbo_total is None:
+        anomalies.append('no TOTAL row')
+    elif qbo_total != (total_debit, total_credit):
+        anomalies.append('grand total mismatch: QuickBooks ' + str(qbo_total[0]) + ' / ' + str(qbo_total[1]))
+    return {'start': start, 'end': end, 'count': len(entries), 'entries': entries,
+            'total_debit': str(total_debit), 'total_credit': str(total_credit),
+            'unbalanced': unbalanced, 'anomalies': anomalies}

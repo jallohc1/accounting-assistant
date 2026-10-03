@@ -44,7 +44,9 @@ def profit_and_loss(client_id, start, end):
 
 
 def list_entries(client_id, start, end):
-    _sandbox_only(client_id, 'Listing journal entries')
+    start, end = date.fromisoformat(start).isoformat(), date.fromisoformat(end).isoformat()
+    if _is_qbo(client_id):
+        return qbo.journal_entries(start, end)
     return db.list_entries(client_id, start, end)
 
 

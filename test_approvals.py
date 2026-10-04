@@ -64,4 +64,16 @@ approvals.decide_second(again, 'maria', True)
 changed = dict(big, args=dict(big['args'], memo='big but changed'))
 refused(changed, 'an approval reused for a changed entry')
 
+rev = {'name': 'reverse_journal_entry', 'args': {'client_id': 'acme', 'entry_id': '7', 'reason': 'two-person test'}}
+assert approvals.needs_second(rev['name'], rev['args'])
+assert approvals.needs_second('reverse_journal_entry', {'client_id': 'acme', 'entry_id': 9999, 'reason': 'x'})
+print('ok  reversing entry 7 (2,500.00) or an unknown entry needs a second approver')
+refused(rev, 'reversal of a large entry with no approval')
+r = approvals.request('chat-test', 'james', rev)
+approvals.decide_second(r, 'maria', True)
+who = approvals.consume('reverse_journal_entry', {'client_id': 'acme', 'entry_id': 7, 'reason': 'two-person test'})
+assert who == {'requested_by': 'james', 'second_approver': 'maria'}, who
+print('ok  approved reversal allowed, entry id "7" and 7 match, approvers returned')
+refused(rev, 'the same reversal approval used twice')
+
 print('all approval checks passed')

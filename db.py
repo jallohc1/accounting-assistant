@@ -360,3 +360,11 @@ def verify_audit():
             return {'ok': False, 'checked': checked, 'problem': f'audit row {r["audit_id"]} was changed'}
         prev = r['hash']
     return {'ok': unsealed == 0, 'checked': len(rows), 'unsealed': unsealed, 'head': prev}
+
+def entry_total(client_id, entry_id):
+    '''Total debits of one entry, or None if this client has no such entry.'''
+    with conn() as c:
+        if not c.execute('SELECT 1 FROM entries WHERE id = ? AND client_id = ?', (entry_id, client_id)).fetchone():
+            return None
+        rows = c.execute('SELECT debit FROM lines WHERE entry_id = ?', (entry_id,)).fetchall()
+    return sum((Decimal(r['debit']) for r in rows if r['debit']), Decimal('0'))

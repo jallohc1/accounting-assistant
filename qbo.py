@@ -328,3 +328,15 @@ def book_close_date():
     prefs = query('select * from Preferences').get('QueryResponse', {}).get('Preferences', [{}])[0]
     close = prefs.get('AccountingInfoPrefs', {}).get('BookCloseDate')
     return close[:10] if close else None
+
+def journal_entry_total(entry_id):
+    '''Total debits of one QuickBooks Journal Entry, or None if there is no such entry.'''
+    from decimal import Decimal
+    entry_id = str(entry_id)
+    if not entry_id.isdigit():
+        return None
+    found = query(f"select * from JournalEntry where Id = '{entry_id}'").get('QueryResponse', {}).get('JournalEntry', [])
+    if not found:
+        return None
+    return sum((Decimal(str(line['Amount'])) for line in found[0].get('Line', [])
+                if line.get('JournalEntryLineDetail', {}).get('PostingType') == 'Debit'), Decimal('0'))

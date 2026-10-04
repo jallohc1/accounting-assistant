@@ -122,7 +122,16 @@ for item in approvals.waiting_for(adviser_id):
         st.warning('Second approval needed. Requested by ' + item['requested_by'] + ' for client '
                    + item['client_id'] + '. Nothing has been written yet.')
         st.markdown('**' + item['tool'] + '**')
-        show_lines(item['args'])
+        if 'lines' in item['args']:
+            show_lines(item['args'])
+        else:
+            st.json(item['args'])
+            if item['tool'] == 'reverse_journal_entry':
+                try:
+                    amount = backend.entry_total(item['args']['client_id'], item['args']['entry_id'])
+                    st.caption(f"Entry {item['args']['entry_id']} totals {amount}")
+                except Exception:
+                    st.caption('The total of the entry being reversed could not be read.')
         left, right = st.columns(2)
         decision = None
         if left.button('Approve as second adviser', key='approve2-' + item['id'], type='primary'):

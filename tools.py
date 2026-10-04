@@ -80,6 +80,13 @@ def get_advisory_notes(client_id: str):
 
 # ---------- write tools: agent.py pauses before each one for approval ----------
 
+def _with_approvers(result, approval):
+    '''Tell the model who approved, when a second approver was required.'''
+    if approval and isinstance(result, dict):
+        return dict(result, approved_by=[approval['requested_by'], approval['second_approver']])
+    return result
+
+
 @tool
 def post_journal_entry(client_id: str, date: str, memo: str, lines: list[dict]):
     '''Post a balanced journal entry. date is YYYY-MM-DD. lines is a list of
@@ -89,8 +96,8 @@ def post_journal_entry(client_id: str, date: str, memo: str, lines: list[dict]):
     args = {'client_id': client_id, 'date': date, 'memo': memo, 'lines': lines}
 
     def write():
-        approvals.consume('post_journal_entry', args)
-        return backend.insert_entry(client_id, date, memo, lines, current_adviser.get())
+        approval = approvals.consume('post_journal_entry', args)
+        return _with_approvers(backend.insert_entry(client_id, date, memo, lines, current_adviser.get()), approval)
 
     return run('post_journal_entry', client_id, {'date': date, 'memo': memo, 'lines': lines}, write)
 
@@ -98,9 +105,15 @@ def post_journal_entry(client_id: str, date: str, memo: str, lines: list[dict]):
 @tool
 def reverse_journal_entry(client_id: str, entry_id: int, reason: str):
     '''Reverse a posted entry by posting an offsetting entry dated today.
-    Never deletes anything. Needs the adviser to approve.'''
-    return run('reverse_journal_entry', client_id, {'entry_id': entry_id, 'reason': reason},
-               lambda: backend.reverse_entry(client_id, entry_id, reason, current_adviser.get()))
+    Never deletes anything. Needs the adviser to approve, and reversing an entry
+    over the approval threshold also needs a second adviser.'''
+    args = {'client_id': client_id, 'entry_id': entry_id, 'reason': reason}
+
+    def write():
+        approval = approvals.consume('reverse_journal_entry', args)
+        return _with_approvers(backend.reverse_entry(client_id, entry_id, reason, current_adviser.get()), approval)
+
+    return run('reverse_journal_entry', client_id, {'entry_id': entry_id, 'reason': reason}, write)
 
 
 @tool

@@ -10,22 +10,32 @@ from decimal import Decimal, InvalidOperation
 import db
 
 THRESHOLD = Decimal(os.getenv('APPROVAL_THRESHOLD', '1000.00'))
-TWO_PERSON_TOOLS = ('post_journal_entry',)
+TWO_PERSON_TOOLS = ('post_journal_entry', 'reverse_journal_entry')
+
+
+def _total(tool, args):
+    if tool == 'post_journal_entry':
+        return sum(Decimal(str(line.get('debit') or 0)) for line in args.get('lines', []))
+    import backend
+    return backend.entry_total(args.get('client_id'), args.get('entry_id'))
 
 
 def needs_second(tool, args):
-    '''True when this action must have a second approver. Unreadable amounts count as large.'''
+    '''True when this action must have a second approver. Unknown or unreadable amounts count as large.'''
     if tool not in TWO_PERSON_TOOLS:
         return False
     try:
-        total = sum(Decimal(str(line.get('debit') or 0)) for line in args.get('lines', []))
-    except (InvalidOperation, AttributeError, TypeError):
+        total = _total(tool, args)
+    except Exception:
         return True
-    return total > THRESHOLD
+    return total is None or total > THRESHOLD
 
 
 def fingerprint(tool, args):
-    '''Identifies the exact entry, so an approval cannot be reused for a different one.'''
+    '''Identifies the exact action, so an approval cannot be reused for a different one.'''
+    args = dict(args)
+    if 'entry_id' in args:
+        args['entry_id'] = str(args['entry_id'])
     body = json.dumps([tool, args], sort_keys=True, separators=(',', ':'), default=str)
     return hashlib.sha256(body.encode()).hexdigest()
 
@@ -116,3 +126,6 @@ def consume(tool, args):
         cur = c.execute("UPDATE approvals SET status = 'used' WHERE id = ? AND status = 'approved'", (row['id'],))
         if cur.rowcount != 1:
             raise ValueError('That approval was already used')
+
+
+    return {'requested_by': row['requested_by'], 'second_approver': row['second_approver']} 

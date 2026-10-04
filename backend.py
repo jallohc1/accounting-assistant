@@ -81,3 +81,9 @@ def get_notes(client_id):
 
 def add_note(client_id, adviser_id, note):
     return db.add_note(client_id, adviser_id, note)
+
+
+def entry_total(client_id, entry_id):
+    if _is_qbo(client_id):
+        return qbo.journal_entry_total(entry_id)
+    return db.entry_total(client_id, entry_id)

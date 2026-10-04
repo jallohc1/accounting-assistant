@@ -368,3 +368,11 @@ def entry_total(client_id, entry_id):
             return None
         rows = c.execute('SELECT debit FROM lines WHERE entry_id = ?', (entry_id,)).fetchall()
     return sum((Decimal(r['debit']) for r in rows if r['debit']), Decimal('0'))
+
+def touch_chat(chat_id):
+    '''Record that a conversation was used now, for the chat retention rule.'''
+    with conn() as c:
+        c.execute('CREATE TABLE IF NOT EXISTS chat_activity (chat_id TEXT PRIMARY KEY, last_used TEXT NOT NULL)')
+        c.execute('INSERT INTO chat_activity (chat_id, last_used) VALUES (?, ?) '
+                  'ON CONFLICT(chat_id) DO UPDATE SET last_used = excluded.last_used',
+                  (chat_id, datetime.now(timezone.utc).isoformat()))

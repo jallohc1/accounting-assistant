@@ -6,6 +6,7 @@ from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
+import os
 import config
 import db
 import approvals
@@ -16,7 +17,7 @@ model = ChatAnthropic(model=config.MODEL)
 
 # Every message and tool result of every chat, and any paused run, kept on disk.
 # Separate from the ledger, because chats hold client data with their own retention rules.
-CHAT_DB_PATH = getattr(config, 'CHAT_DB_PATH', 'chats.db')
+CHAT_DB_PATH = os.getenv('CHAT_DB_PATH') or getattr(config, 'CHAT_DB_PATH', 'chats.db')
 
 
 def _build(saver):
@@ -38,6 +39,7 @@ def _settings(chat_id):
 
 async def _run(payload, chat_id):
     '''Open the chat store for this one call, because asyncio.run gives every call a fresh event loop.'''
+    db.touch_chat(chat_id)
     async with AsyncSqliteSaver.from_conn_string(CHAT_DB_PATH) as saver:
         return await _build(saver).ainvoke(payload, config=_settings(chat_id))
 

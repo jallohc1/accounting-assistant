@@ -17,18 +17,34 @@ _lock = threading.Lock()
 _cache = {'access': None, 'expires': 0.0}
 
 
+def _secrets():
+    import boto3
+    return boto3.Session(profile_name=os.getenv('QBO_AWS_PROFILE')).client('secretsmanager', region_name='us-east-1')
+
+
+def _load_secret():
+    '''Client id, client secret and refresh token, from AWS Secrets Manager.'''
+    import json
+    return json.loads(_secrets().get_secret_value(SecretId=os.environ['QBO_SECRET_ID'])['SecretString'])
+
+
+def _save_refresh_token(secret, new_refresh):
+    '''Store the rotated refresh token as a new version of the secret.'''
+    import json
+    _secrets().put_secret_value(SecretId=os.environ['QBO_SECRET_ID'],
+                                SecretString=json.dumps(dict(secret, refresh_token=new_refresh)))
+
+
 def configured():
-    '''True when the QuickBooks settings and a refresh token are present.'''
-    needed = ('QBO_CLIENT_ID', 'QBO_CLIENT_SECRET', 'QBO_REALM_ID')
-    has_token = TOKEN_FILE.exists() or bool(os.getenv('QBO_REFRESH_TOKEN'))
-    return all(os.getenv(k) for k in needed) and has_token
+    '''True when the QuickBooks secret and realm are configured.'''
+    return bool(os.getenv('QBO_SECRET_ID') and os.getenv('QBO_REALM_ID'))
 
 
-def refresh_access_token(refresh_token):
+def refresh_access_token(refresh_token, client_id, client_secret):
     '''Trade a refresh token for an access token. Returns (access_token, new_refresh_token).'''
     resp = requests.post(
         TOKEN_URL,
-        auth=(os.environ['QBO_CLIENT_ID'], os.environ['QBO_CLIENT_SECRET']),
+        auth=(client_id, client_secret),
         headers={'Accept': 'application/json'},
         data={'grant_type': 'refresh_token', 'refresh_token': refresh_token},
         timeout=30,
@@ -43,9 +59,14 @@ def access_token():
     with _lock:
         if _cache['access'] and time.time() < _cache['expires']:
             return _cache['access']
-        refresh = TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else os.environ['QBO_REFRESH_TOKEN']
-        access, new_refresh = refresh_access_token(refresh)
-        TOKEN_FILE.write_text(new_refresh)
+        secret = _load_secret()
+        access, new_refresh = refresh_access_token(secret['refresh_token'], secret['client_id'], secret['client_secret'])
+        if new_refresh != secret['refresh_token']:
+            try:
+                _save_refresh_token(secret, new_refresh)
+            except Exception as e:
+                raise RuntimeError('QuickBooks issued a new refresh token but it could not be saved to '
+                                   'Secrets Manager. Fix the AWS access before trying again.') from e
         _cache.update(access=access, expires=time.time() + 50 * 60)
         return access
 

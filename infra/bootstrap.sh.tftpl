@@ -1,0 +1,138 @@
+#!/bin/bash
+set -euo pipefail
+
+dnf install -y docker
+systemctl enable --now docker
+docker network inspect web >/dev/null 2>&1 || docker network create web
+
+DEV=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${volume_id}
+for i in $(seq 1 90); do [ -e "$DEV" ] && break; sleep 5; done
+blkid "$DEV" >/dev/null 2>&1 || mkfs.ext4 -L appdata "$DEV"
+mkdir -p /data
+grep -q "LABEL=appdata" /etc/fstab || echo "LABEL=appdata /data ext4 defaults,nofail 0 2" >> /etc/fstab
+mount -a
+chown 1000:1000 /data
+
+mkdir -p /opt/app
+echo "${image}" > /opt/app/image
+
+cat > /opt/app/base.env <<'EOF'
+${base_env}
+EOF
+
+cat > /opt/app/Caddyfile <<'EOF'
+${domain} {
+    reverse_proxy app:8501
+}
+EOF
+
+cat > /opt/app/render.py <<'EOF'
+import json, os, subprocess
+secret = json.loads(subprocess.check_output(['aws', 'secretsmanager', 'get-secret-value', '--region', 'us-east-1',
+                                             '--secret-id', 'accounting-assistant/app', '--query', 'SecretString',
+                                             '--output', 'text']))
+
+
+def write(path, text, mode, uid=0):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+    os.chmod(path, mode)
+    os.chown(path, uid, uid)
+
+
+base = open('/opt/app/base.env').read().rstrip('\n') + '\n'
+write('/opt/app/app.env', base + 'ANTHROPIC_API_KEY=' + secret['ANTHROPIC_API_KEY'] + '\n', 0o600)
+toml = ('[auth]\n'
+        'redirect_uri = "https://${domain}/oauth2callback"\n'
+        'cookie_secret = "' + secret['cookie_secret'] + '"\n'
+        'client_id = "' + secret['google_client_id'] + '"\n'
+        'client_secret = "' + secret['google_client_secret'] + '"\n'
+        'server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"\n')
+write('/opt/app/secrets.toml', toml, 0o640, 1000)
+EOF
+
+cat > /opt/app/start.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [ ! -f /data/.ready ]; then echo "Waiting for the data migration (/data/.ready)"; exit 1; fi
+IMAGE=$(cat /opt/app/image)
+python3 /opt/app/render.py
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${registry}
+docker pull "$IMAGE"
+docker rm -f app >/dev/null 2>&1 || true
+exec docker run --name app --network web --env-file /opt/app/app.env -v /data:/data -v /opt/app/secrets.toml:/app/.streamlit/secrets.toml:ro "$IMAGE"
+EOF
+chmod 700 /opt/app/start.sh
+
+cat > /etc/systemd/system/accounting-app.service <<'EOF'
+[Unit]
+Description=Accounting assistant
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/opt/app/start.sh
+ExecStop=/usr/bin/docker stop app
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/caddy.service <<'EOF'
+[Unit]
+Description=Caddy HTTPS proxy
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f caddy
+ExecStart=/usr/bin/docker run --name caddy --network web -p 80:80 -p 443:443 -v /opt/app/Caddyfile:/etc/caddy/Caddyfile:ro -v caddy_data:/data -v caddy_config:/config caddy:2
+ExecStop=/usr/bin/docker stop caddy
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/audit-export.service <<'EOF'
+[Unit]
+Description=Export new audit rows to the locked S3 bucket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec app python -c "import audit_export; print(audit_export.export_audit())"
+EOF
+
+cat > /etc/systemd/system/audit-export.timer <<'EOF'
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > /etc/systemd/system/chat-purge.service <<'EOF'
+[Unit]
+Description=Delete conversations past their retention period
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec app python -c "import chat_retention; print(chat_retention.run())"
+EOF
+
+cat > /etc/systemd/system/chat-purge.timer <<'EOF'
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now caddy.service accounting-app.service audit-export.timer chat-purge.timer

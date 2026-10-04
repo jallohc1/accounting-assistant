@@ -8,6 +8,8 @@ from contextvars import ContextVar
 
 from langchain_core.tools import tool
 
+import approvals
+
 import backend
 import db
 
@@ -82,9 +84,15 @@ def get_advisory_notes(client_id: str):
 def post_journal_entry(client_id: str, date: str, memo: str, lines: list[dict]):
     '''Post a balanced journal entry. date is YYYY-MM-DD. lines is a list of
     {account_code, debit, credit}. Amounts are strings like 120.00 and the unused
-    side is an empty string. Call list_accounts first. Needs the adviser to approve.'''
-    return run('post_journal_entry', client_id, {'date': date, 'memo': memo, 'lines': lines},
-               lambda: backend.insert_entry(client_id, date, memo, lines, current_adviser.get()))
+    side is an empty string. Call list_accounts first. Needs the adviser to approve,
+    and entries over the approval threshold also need a second adviser.'''
+    args = {'client_id': client_id, 'date': date, 'memo': memo, 'lines': lines}
+
+    def write():
+        approvals.consume('post_journal_entry', args)
+        return backend.insert_entry(client_id, date, memo, lines, current_adviser.get())
+
+    return run('post_journal_entry', client_id, {'date': date, 'memo': memo, 'lines': lines}, write)
 
 
 @tool

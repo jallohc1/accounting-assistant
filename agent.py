@@ -8,6 +8,7 @@ from langgraph.types import Command
 
 import config
 import db
+import approvals
 from tools import WRITE_TOOL_NAMES, current_adviser, load_tools
 
 tools = load_tools(config.READ_ONLY)
@@ -100,8 +101,18 @@ async def ask(adviser_id, question, chat_id):
 
 
 async def decide(adviser_id, approve, pending, chat_id):
-    '''Log the adviser's decision on the pending actions, then resume the paused run.'''
+    '''Log the adviser's decision, then resume the paused run. Over the threshold, the adviser's
+    approval is only 1 of 2: the run stays paused until a different adviser decides.'''
     current_adviser.set(adviser_id)
+    if approve and any(approvals.needs_second(r['name'], r['args']) for r in pending):
+        for request in pending:
+            if approvals.needs_second(request['name'], request['args']):
+                approvals.request(chat_id, adviser_id, request)
+            else:
+                db.log(adviser_id, request['args'].get('client_id'), request['name'], request['args'], 'approved')
+        return {'answer': None, 'called': [], 'pending': pending, 'awaiting_second': True}
+    if not approve:
+        approvals.withdraw(chat_id, adviser_id)
     outcome = 'approved' if approve else 'rejected'
     for request in pending:
         args = request['args']
@@ -112,3 +123,18 @@ async def decide(adviser_id, approve, pending, chat_id):
         decision = {'type': 'reject', 'message': 'The adviser rejected this action.'}
     result = await _run(Command(resume={'decisions': [decision] * len(pending)}), chat_id)
     return _finish(adviser_id, result)
+
+
+async def decide_second(approver_id, approval_id, approve):
+    '''A different adviser decides a request over the threshold, then the requester's paused run resumes.'''
+    row = approvals.decide_second(approval_id, approver_id, approve)
+    waiting = (await history(row['chat_id']))['pending']
+    if not waiting:
+        return {'answer': 'That request is no longer waiting in the chat.', 'called': [], 'pending': None}
+    current_adviser.set(row['requested_by'])
+    if approve:
+        decision = {'type': 'approve'}
+    else:
+        decision = {'type': 'reject', 'message': 'A second adviser rejected this action.'}
+    result = await _run(Command(resume={'decisions': [decision] * len(waiting)}), row['chat_id'])
+    return _finish(row['requested_by'], result)

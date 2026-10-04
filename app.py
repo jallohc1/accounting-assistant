@@ -1,12 +1,12 @@
 '''Streamlit chat page for the accounting and advisory assistant.'''
 
 import asyncio
-import uuid
 from decimal import Decimal
 
 import streamlit as st
 
 import agent
+import approvals
 import backend
 import config
 import db
@@ -62,6 +62,12 @@ if st.session_state.get('scope') != scope:
     st.session_state.update(scope=scope, chat_id=chat_id,
                             messages=restored['messages'], pending=restored['pending'])
 
+# A second adviser may have decided a request that was waiting here: pick up the result.
+if st.session_state.pending:
+    restored = asyncio.run(agent.history(st.session_state.chat_id))
+    if not restored['pending']:
+        st.session_state.update(messages=restored['messages'], pending=None)
+
 with st.sidebar:
     if st.button('New conversation', disabled=bool(st.session_state.pending)):
         st.session_state.update(chat_id=db.current_chat(adviser_id, client_id, new=True),
@@ -100,6 +106,38 @@ def with_names(args):
              'debit': l.get('debit'), 'credit': l.get('credit')} for l in args['lines']]
 
 
+def show_lines(args):
+    st.write('Date: ' + str(args.get('date')) + '   Memo: ' + str(args.get('memo')))
+    st.dataframe(with_names(args), hide_index=True)
+    st.caption(f'Total debits {total(args["lines"], "debit")}  |  total credits {total(args["lines"], "credit")}')
+
+
+notice = st.session_state.pop('notice', None)
+if notice:
+    st.info(notice)
+
+# Requests from other advisers that need this adviser as the second approver.
+for item in approvals.waiting_for(adviser_id):
+    with st.container(border=True):
+        st.warning('Second approval needed. Requested by ' + item['requested_by'] + ' for client '
+                   + item['client_id'] + '. Nothing has been written yet.')
+        st.markdown('**' + item['tool'] + '**')
+        show_lines(item['args'])
+        left, right = st.columns(2)
+        decision = None
+        if left.button('Approve as second adviser', key='approve2-' + item['id'], type='primary'):
+            decision = True
+        if right.button('Reject', key='reject2-' + item['id']):
+            decision = False
+        if decision is not None:
+            try:
+                with st.spinner('Working...'):
+                    result = asyncio.run(agent.decide_second(adviser_id, item['id'], decision))
+                st.session_state.notice = result['answer'] or 'Decision recorded.'
+            except ValueError as error:
+                st.session_state.notice = 'Not done: ' + str(error)
+            st.rerun()
+
 for m in st.session_state.messages:
     with st.chat_message(m['role']):
         if m.get('called'):
@@ -108,20 +146,23 @@ for m in st.session_state.messages:
 
 pending = st.session_state.pending
 if pending:
+    waiting_second = approvals.for_chat(st.session_state.chat_id)
     with st.chat_message('assistant'):
-        st.warning('Approval needed. Nothing has been written yet.')
+        if waiting_second:
+            st.info(f'You approved this. It is over the approval threshold ({approvals.THRESHOLD}), so it is '
+                    'waiting for a second adviser. Nothing has been written yet.')
+        else:
+            st.warning('Approval needed. Nothing has been written yet.')
         for request in pending:
             st.markdown('**' + request['name'] + '**')
             args = request['args']
             if 'lines' in args:
-                st.write('Date: ' + str(args.get('date')) + '   Memo: ' + str(args.get('memo')))
-                st.dataframe(with_names(args), hide_index=True)
-                st.caption(f'Total debits {total(args["lines"], "debit")}  |  total credits {total(args["lines"], "credit")}')
+                show_lines(args)
             else:
                 st.json(args)
         left, right = st.columns(2)
-        approve = left.button('Approve', type='primary')
-        reject = right.button('Reject')
+        approve = False if waiting_second else left.button('Approve', type='primary')
+        reject = right.button('Withdraw' if waiting_second else 'Reject')
     if approve or reject:
         with st.spinner('Working...'):
             result = asyncio.run(agent.decide(adviser_id, approve, pending, st.session_state.chat_id))

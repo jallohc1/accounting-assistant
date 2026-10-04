@@ -54,10 +54,19 @@ client_id = client['id']
 client_name = client['name']
 st.caption(f'Client: {client_name}. I can read the books and draft advice. Every write waits for your Approve click.')
 
-# One chat per adviser and client, so one client's data never sits in another client's chat.
+# One stored conversation per adviser and client, so one client's data never sits in another client's chat.
 scope = f'{adviser_id}:{client_id}'
 if st.session_state.get('scope') != scope:
-    st.session_state.update(scope=scope, chat_id=str(uuid.uuid4()), messages=[], pending=None)
+    chat_id = db.current_chat(adviser_id, client_id)
+    restored = asyncio.run(agent.history(chat_id))
+    st.session_state.update(scope=scope, chat_id=chat_id,
+                            messages=restored['messages'], pending=restored['pending'])
+
+with st.sidebar:
+    if st.button('New conversation', disabled=bool(st.session_state.pending)):
+        st.session_state.update(chat_id=db.current_chat(adviser_id, client_id, new=True),
+                                messages=[], pending=None)
+        st.rerun()
 
 
 def record(result):

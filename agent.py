@@ -3,7 +3,7 @@
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_anthropic import ChatAnthropic
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 
 import config
@@ -13,23 +13,32 @@ from tools import WRITE_TOOL_NAMES, current_adviser, load_tools
 tools = load_tools(config.READ_ONLY)
 model = ChatAnthropic(model=config.MODEL)
 
-# Every message and tool result of every chat. A paused run is saved here too.
-memory = InMemorySaver()
+# Every message and tool result of every chat, and any paused run, kept on disk.
+# Separate from the ledger, because chats hold client data with their own retention rules.
+CHAT_DB_PATH = getattr(config, 'CHAT_DB_PATH', 'chats.db')
 
-agent = create_agent(
-    model,
-    tools,
-    system_prompt=config.SYSTEM_PROMPT,
-    checkpointer=memory,
-    middleware=[HumanInTheLoopMiddleware(interrupt_on={
-        name: {'allowed_decisions': ['approve', 'reject']}
-        for name in WRITE_TOOL_NAMES
-    })],
-)
+
+def _build(saver):
+    return create_agent(
+        model,
+        tools,
+        system_prompt=config.SYSTEM_PROMPT,
+        checkpointer=saver,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={
+            name: {'allowed_decisions': ['approve', 'reject']}
+            for name in WRITE_TOOL_NAMES
+        })],
+    )
 
 
 def _settings(chat_id):
     return {'recursion_limit': config.STEP_LIMIT, 'configurable': {'thread_id': chat_id}}
+
+
+async def _run(payload, chat_id):
+    '''Open the chat store for this one call, because asyncio.run gives every call a fresh event loop.'''
+    async with AsyncSqliteSaver.from_conn_string(CHAT_DB_PATH) as saver:
+        return await _build(saver).ainvoke(payload, config=_settings(chat_id))
 
 
 def _package(result):
@@ -57,11 +66,36 @@ def _finish(adviser_id, result):
     return packaged
 
 
+async def history(chat_id):
+    '''The stored conversation as the page shows it, plus any approval still waiting.'''
+    async with AsyncSqliteSaver.from_conn_string(CHAT_DB_PATH) as saver:
+        state = await _build(saver).aget_state(_settings(chat_id))
+    messages = state.values.get('messages', []) if state.values else []
+    shown, called = [], []
+    for m in messages:
+        if m.type == 'human':
+            text = m.text
+            if text.startswith('[Active client:') and '] ' in text:
+                text = text.split('] ', 1)[1]
+            shown.append({'role': 'user', 'content': text})
+            called = []
+        elif m.type == 'tool':
+            called.append(m.name)
+        elif m.type == 'ai' and not m.tool_calls and m.text:
+            shown.append({'role': 'assistant', 'content': m.text, 'called': called})
+            called = []
+    interrupts = list(getattr(state, 'interrupts', ()) or ())
+    if not interrupts:
+        for task in state.tasks or ():
+            interrupts.extend(task.interrupts or ())
+    pending = interrupts[0].value['action_requests'] if interrupts else None
+    return {'messages': shown, 'pending': pending}
+
+
 async def ask(adviser_id, question, chat_id):
     '''Ask one question. If the model wants to write, this returns pending approvals, not an answer.'''
     current_adviser.set(adviser_id)
-    result = await agent.ainvoke(
-        {'messages': [{'role': 'user', 'content': question}]}, config=_settings(chat_id))
+    result = await _run({'messages': [{'role': 'user', 'content': question}]}, chat_id)
     return _finish(adviser_id, result)
 
 
@@ -76,6 +110,5 @@ async def decide(adviser_id, approve, pending, chat_id):
         decision = {'type': 'approve'}
     else:
         decision = {'type': 'reject', 'message': 'The adviser rejected this action.'}
-    result = await agent.ainvoke(
-        Command(resume={'decisions': [decision] * len(pending)}), config=_settings(chat_id))
+    result = await _run(Command(resume={'decisions': [decision] * len(pending)}), chat_id)
     return _finish(adviser_id, result)

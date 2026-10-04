@@ -4,3 +4,4 @@ langchain>=1,<2
 langchain-anthropic>=1,<2
 requests>=2.31,<3
 Authlib
+langgraph-checkpoint-sqlite

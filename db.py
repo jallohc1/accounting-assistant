@@ -282,3 +282,20 @@ def adviser_for_email(email):
         row = c.execute('SELECT adviser_id FROM adviser_logins WHERE email = ?',
                         (email.strip().lower(),)).fetchone()
     return row['adviser_id'] if row else None
+
+
+def current_chat(adviser_id, client_id, new=False):
+    '''The adviser's latest conversation for this client, or a new one. Old ones stay in the chat store.'''
+    import uuid
+    with conn() as c:
+        c.execute('CREATE TABLE IF NOT EXISTS chat_threads (adviser_id TEXT NOT NULL, client_id TEXT NOT NULL, '
+                  'chat_id TEXT PRIMARY KEY, started TEXT NOT NULL)')
+        if not new:
+            row = c.execute('SELECT chat_id FROM chat_threads WHERE adviser_id = ? AND client_id = ? '
+                            'ORDER BY started DESC LIMIT 1', (adviser_id, client_id)).fetchone()
+            if row:
+                return row['chat_id']
+        chat_id = str(uuid.uuid4())
+        c.execute('INSERT INTO chat_threads (adviser_id, client_id, chat_id, started) VALUES (?, ?, ?, ?)',
+                  (adviser_id, client_id, chat_id, datetime.now(timezone.utc).isoformat()))
+    return chat_id

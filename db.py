@@ -107,6 +107,7 @@ def log(adviser_id, client_id, tool, args, outcome):
     with conn() as c:
         c.execute('INSERT INTO audit_log (ts, adviser_id, client_id, tool, args, outcome) VALUES (?, ?, ?, ?, ?, ?)',
                   (ts, adviser_id, client_id, tool, json.dumps(args, default=str), outcome))
+        _seal(c)
 
 
 # ---------- helpers ----------
@@ -299,3 +300,63 @@ def current_chat(adviser_id, client_id, new=False):
         c.execute('INSERT INTO chat_threads (adviser_id, client_id, chat_id, started) VALUES (?, ?, ?, ?)',
                   (adviser_id, client_id, chat_id, datetime.now(timezone.utc).isoformat()))
     return chat_id
+
+# ---------- tamper-evident audit chain ----------
+
+GENESIS = '0' * 64
+
+
+def _ensure_chain(c):
+    c.execute('CREATE TABLE IF NOT EXISTS audit_chain ('
+              'audit_id INTEGER PRIMARY KEY, prev_hash TEXT NOT NULL, hash TEXT NOT NULL)')
+    for action in ('UPDATE', 'DELETE'):
+        c.execute(f'''CREATE TRIGGER IF NOT EXISTS audit_chain_no_{action.lower()}
+                      BEFORE {action} ON audit_chain
+                      BEGIN SELECT RAISE(ABORT, 'audit chain is append-only'); END''')
+
+
+def _row_hash(prev_hash, row):
+    import hashlib
+    body = json.dumps([row['id'], row['ts'], row['adviser_id'], row['client_id'],
+                       row['tool'], row['args'], row['outcome']], separators=(',', ':'))
+    return hashlib.sha256((prev_hash + '\n' + body).encode()).hexdigest()
+
+
+def _seal(c):
+    '''Chain every audit row that is not chained yet, in id order.'''
+    _ensure_chain(c)
+    last = c.execute('SELECT audit_id, hash FROM audit_chain ORDER BY audit_id DESC LIMIT 1').fetchone()
+    prev, after = (last['hash'], last['audit_id']) if last else (GENESIS, 0)
+    rows = c.execute('SELECT id, ts, adviser_id, client_id, tool, args, outcome FROM audit_log '
+                     'WHERE id > ? ORDER BY id', (after,)).fetchall()
+    for row in rows:
+        h = _row_hash(prev, row)
+        c.execute('INSERT INTO audit_chain (audit_id, prev_hash, hash) VALUES (?, ?, ?)', (row['id'], prev, h))
+        prev = h
+    return len(rows)
+
+
+def seal_audit():
+    with conn() as c:
+        return _seal(c)
+
+
+def verify_audit():
+    '''Recompute every link. Returns ok, how many rows were checked, and the first problem found.'''
+    with conn() as c:
+        _ensure_chain(c)
+        rows = c.execute('SELECT ch.audit_id, ch.prev_hash, ch.hash, a.id, a.ts, a.adviser_id, a.client_id, '
+                         'a.tool, a.args, a.outcome FROM audit_chain ch LEFT JOIN audit_log a ON a.id = ch.audit_id '
+                         'ORDER BY ch.audit_id').fetchall()
+        unsealed = c.execute('SELECT COUNT(*) FROM audit_log WHERE id > '
+                             'COALESCE((SELECT MAX(audit_id) FROM audit_chain), 0)').fetchone()[0]
+    prev = GENESIS
+    for checked, r in enumerate(rows):
+        if r['id'] is None:
+            return {'ok': False, 'checked': checked, 'problem': f'audit row {r["audit_id"]} is missing'}
+        if r['prev_hash'] != prev:
+            return {'ok': False, 'checked': checked, 'problem': f'chain broken before audit row {r["audit_id"]}'}
+        if _row_hash(prev, r) != r['hash']:
+            return {'ok': False, 'checked': checked, 'problem': f'audit row {r["audit_id"]} was changed'}
+        prev = r['hash']
+    return {'ok': unsealed == 0, 'checked': len(rows), 'unsealed': unsealed, 'head': prev}

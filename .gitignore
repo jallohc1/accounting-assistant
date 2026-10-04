@@ -4,3 +4,7 @@ __pycache__/
 *.db
 .qbo_refresh_token
 .streamlit/secrets.toml
+data/
+infra/.terraform/
+infra/terraform.tfstate*
+infra/*.tfplan

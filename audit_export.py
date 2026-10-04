@@ -9,7 +9,7 @@ import boto3
 import db
 
 BUCKET = os.environ.get('AUDIT_BUCKET')
-PROFILE = os.environ.get('AUDIT_AWS_PROFILE', 'accounting-audit')
+PROFILE = os.environ.get('AUDIT_AWS_PROFILE') or None
 RETENTION_DAYS = int(os.environ.get('AUDIT_RETENTION_DAYS', '1'))
 
 

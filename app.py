@@ -25,22 +25,41 @@ if not st.user.is_logged_in:
 
 user = st.user.to_dict()
 email = str(user.get('email') or '').strip().lower()
+
+
+def log_sign_in(adviser, outcome):
+    '''One audit row per browser session and outcome, not one per click.'''
+    if st.session_state.get('sign_in_logged') != (email, outcome):
+        db.log(adviser, None, 'sign_in', {'email': email}, outcome)
+        st.session_state.sign_in_logged = (email, outcome)
+
+
+def sign_out():
+    db.log(adviser_id, None, 'sign_out', {'email': email}, 'ok')
+    st.session_state.pop('sign_in_logged', None)
+    st.logout()
+
+
 if user.get('email_verified') is not True:
+    log_sign_in(None, 'refused: email not verified')
     st.error('Your email address is not verified by the sign-in provider.')
     st.button('Sign out', on_click=st.logout)
     st.stop()
 
 adviser_id = db.adviser_for_email(email)
 if not adviser_id:
+    log_sign_in(None, 'refused: not linked to an adviser')
     st.error('This account is not set up as an adviser. Ask your firm administrator.')
     st.button('Sign out', on_click=st.logout)
     st.stop()
+
+log_sign_in(adviser_id, 'ok')
 
 adviser_name = {a['id']: a['name'] for a in db.advisers()}.get(adviser_id, adviser_id)
 with st.sidebar:
     st.write('Signed in as **' + adviser_name + '**')
     st.caption(email)
-    st.button('Sign out', on_click=st.logout)
+    st.button('Sign out', on_click=sign_out)
     clients = db.clients_for(adviser_id)
     client = st.selectbox('Active client', clients, format_func=lambda c: c['name'])
     if config.READ_ONLY:

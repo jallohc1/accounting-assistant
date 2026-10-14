@@ -41,3 +41,14 @@ resource "aws_ecr_lifecycle_policy" "app" {
 output "ecr_url" {
   value = aws_ecr_repository.app.repository_url
 }
+resource "aws_ecr_registry_scanning_configuration" "this" {
+  scan_type = "ENHANCED"
+
+  rule {
+    scan_frequency = "CONTINUOUS_SCAN"
+    repository_filter {
+      filter      = "accounting-assistant"
+      filter_type = "WILDCARD"
+    }
+  }
+}

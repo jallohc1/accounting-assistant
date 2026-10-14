@@ -8,3 +8,4 @@ data/
 infra/.terraform/
 infra/terraform.tfstate*
 infra/*.tfplan
+infra/terraform.tfvars

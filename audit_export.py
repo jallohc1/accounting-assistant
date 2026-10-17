@@ -88,3 +88,29 @@ def verify_exports(profile=None):
     waiting = sum(1 for i in local if i > last_id)
     return {'ok': True, 'checked': checked, 'files': len(keys), 'exported_through': last_id,
             'not_yet_exported': waiting}
+
+
+def verify_locked_copies(profile='auditor', bucket=None):
+    '''Check the locked S3 copies on their own, with no database: the chain must run unbroken from
+    the genesis hash. Returns the last row id and its hash (the locked head), to compare with the
+    live chain on the server. Run it with the read-only auditor profile.'''
+    bucket = bucket or BUCKET or 'accounting-assistant-audit-975050154381'
+    s3 = boto3.Session(profile_name=profile).client('s3')
+    keys = []
+    for page in s3.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix='audit/'):
+        keys += [o['Key'] for o in page.get('Contents', [])]
+    keys.sort(key=lambda k: k.rsplit('/', 1)[1])
+    prev, last_id, checked, earliest_lock = db.GENESIS, 0, 0, None
+    for key in keys:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        until = obj.get('ObjectLockRetainUntilDate')
+        if until and (earliest_lock is None or until < earliest_lock):
+            earliest_lock = until
+        for row in (json.loads(line) for line in obj['Body'].read().decode().splitlines() if line):
+            if row['id'] <= last_id:
+                continue
+            if row['prev_hash'] != prev or db._row_hash(prev, row) != row['hash']:
+                return {'ok': False, 'checked': checked, 'problem': f'locked copy broken at audit row {row["id"]}'}
+            prev, last_id, checked = row['hash'], row['id'], checked + 1
+    return {'ok': True, 'files': len(keys), 'checked': checked, 'head_id': last_id, 'head_hash': prev,
+            'earliest_lock_until': earliest_lock.isoformat() if earliest_lock else None}
